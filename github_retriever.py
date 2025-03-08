@@ -25,30 +25,40 @@ class GitHubRetriever:
         
     def clone_repository(self, repo_url: str) -> str:
         """
-        Clones a GitHub repository to a local directory.
+        Clone a GitHub repository.
         
         Args:
-            repo_url: The URL of the GitHub repository.
+            repo_url: URL of the GitHub repository.
             
         Returns:
-            Path to the cloned repository directory.
+            Path to the cloned repository.
         """
-        # Extract repo name from URL
+        # Extract repository name from URL
         repo_name = repo_url.split('/')[-1]
-        if repo_name.endswith('.git'):
-            repo_name = repo_name[:-4]
-            
-        # Create a unique path for this repo
         repo_path = os.path.join(self.temp_dir, repo_name)
         
         # Check if the repository already exists locally
         if os.path.exists(repo_path):
-            shutil.rmtree(repo_path)
-            
+            try:
+                # Try to use shutil.rmtree first
+                shutil.rmtree(repo_path)
+            except PermissionError:
+                # If that fails, use system commands
+                try:
+                    if os.name == 'nt':  # Windows
+                        os.system(f'rmdir /S /Q "{repo_path}"')
+                    else:  # Unix-like
+                        os.system(f'rm -rf "{repo_path}"')
+                except Exception as e:
+                    raise Exception(f"Error removing existing repository: {e}")
+        
         # Clone the repository
         print(f"Cloning repository: {repo_url}")
-        Repo.clone_from(repo_url, repo_path)
-        print(f"Repository cloned to: {repo_path}")
+        try:
+            Repo.clone_from(repo_url, repo_path)
+            print(f"Repository cloned to: {repo_path}")
+        except Exception as e:
+            raise Exception(f"Error cloning repository: {e}")
         
         return repo_path
     
@@ -135,5 +145,17 @@ class GitHubRetriever:
         Clean up temporary directories.
         """
         if os.path.exists(self.temp_dir):
-            shutil.rmtree(self.temp_dir)
-            print(f"Cleaned up temporary directory: {self.temp_dir}") 
+            try:
+                shutil.rmtree(self.temp_dir)
+                print(f"Cleaned up temporary directory: {self.temp_dir}")
+            except PermissionError:
+                # On Windows, use system commands to force delete
+                try:
+                    if os.name == 'nt':  # Windows
+                        os.system(f'rmdir /S /Q "{self.temp_dir}"')
+                    else:  # Unix-like
+                        os.system(f'rm -rf "{self.temp_dir}"')
+                    print(f"Cleaned up temporary directory using system command: {self.temp_dir}")
+                except Exception as e:
+                    print(f"Warning: Could not clean up temporary directory: {e}")
+                    print(f"You may need to manually delete: {self.temp_dir}") 

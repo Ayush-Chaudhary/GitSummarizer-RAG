@@ -5,7 +5,7 @@ import uuid
 from pinecone import Pinecone
 from langchain.schema import Document
 from langchain_pinecone import PineconeVectorStore
-from langchain.embeddings import OpenAIEmbeddings
+from langchain_community.embeddings import OpenAIEmbeddings
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
 import config
@@ -62,12 +62,28 @@ class VectorStore:
         # List existing indexes
         existing_indexes = [index.name for index in self.pc.list_indexes()]
         
+        # Delete index if it exists with wrong dimensions
+        if self.index_name in existing_indexes:
+            try:
+                # Try to delete the index
+                self.pc.delete_index(self.index_name)
+                print(f"Deleted existing Pinecone index: {self.index_name}")
+                # Remove from the list since we just deleted it
+                existing_indexes.remove(self.index_name)
+            except Exception as e:
+                print(f"Warning: Could not delete existing index: {e}")
+        
         # Create index if it doesn't exist
         if self.index_name not in existing_indexes:
+            from pinecone import ServerlessSpec
+            
+            # Create index with ServerlessSpec for Pinecone client v6.0.0
+            # Using AWS us-east-1 for free tier as recommended
             self.pc.create_index(
                 name=self.index_name,
-                dimension=768,  # Default dimension for sentence-transformers
-                metric="cosine"
+                dimension=384,  # Dimension for all-MiniLM-L6-v2 model
+                metric="cosine",
+                spec=ServerlessSpec(cloud="aws", region="us-east-1")
             )
             print(f"Created new Pinecone index: {self.index_name}")
     
@@ -93,7 +109,18 @@ class VectorStore:
                 
             # Add a unique ID if metadata doesn't have one
             if 'id' not in metadata:
-                metadata['id'] = str(uuid.uuid4())
+                # If we have file name and function/class info, create a more descriptive ID
+                if 'file_name' in metadata:
+                    id_components = [metadata['file_name']]
+                    if metadata.get('class_name'):
+                        id_components.append(metadata['class_name'])
+                    if metadata.get('function_name'):
+                        id_components.append(metadata['function_name'])
+                        
+                    # Create a descriptive ID with a UUID suffix for uniqueness
+                    metadata['id'] = f"{'-'.join(id_components)}-{str(uuid.uuid4())[:8]}"
+                else:
+                    metadata['id'] = str(uuid.uuid4())
                 
             langchain_docs.append(
                 Document(
@@ -123,6 +150,15 @@ class VectorStore:
         """
         documents = []
         for i, chunk in enumerate(code_chunks):
+            # Extract file name from the file_path
+            file_name = chunk.get('file_path', '').split('/')[-1] if 'file_path' in chunk else 'unknown'
+            
+            # Extract class and function information if available
+            # Convert None values to empty strings to avoid Pinecone metadata issues
+            class_name = chunk.get('class_name', '') or ''
+            function_name = chunk.get('function_name', '') or ''
+            
+            # Create document with enhanced metadata
             documents.append({
                 'content': chunk['chunk'],
                 'id': f"{repo_url}-chunk-{i}",
@@ -130,7 +166,11 @@ class VectorStore:
                 'end_line': chunk['end_line'],
                 'token_count': chunk['token_count'],
                 'repo_url': repo_url,
-                'chunk_index': i
+                'chunk_index': i,
+                'file_name': file_name,
+                'file_path': chunk.get('file_path', ''),
+                'class_name': class_name,
+                'function_name': function_name
             })
             
         return self.add_documents(documents, namespace=repo_url)

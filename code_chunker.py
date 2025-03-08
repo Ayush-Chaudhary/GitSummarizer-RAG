@@ -45,17 +45,23 @@ class CodeParser:
         
         # Set language
         if file_extension == "py":
-            self.parser.set_language(Language.build_library('py', [tspython.language()]))
+            language = Language(tspython.language())
+            self.parser = Parser(language)
         elif file_extension == "java":
-            self.parser.set_language(Language.build_library('java', [tsjava.language()]))
+            language = Language(tsjava.language())  
+            self.parser = Parser(language)
         elif file_extension == "cpp":
-            self.parser.set_language(Language.build_library('cpp', [tscpp.language()]))
+            language = Language(tscpp.language())
+            self.parser = Parser(language)
         elif file_extension == "js":
-            self.parser.set_language(Language.build_library('js', [tsjs.language()]))
+            language = Language(tsjs.language())
+            self.parser = Parser(language)
         elif file_extension == "go":
-            self.parser.set_language(Language.build_library('go', [tsgo.language()]))
+            language = Language(tsgo.language())
+            self.parser = Parser(language)
         elif file_extension == "html":
-            self.parser.set_language(Language.build_library('html', [tshtml.language()]))
+            language = Language(tshtml.language())
+            self.parser = Parser(language)
     
     def parse_code(self, code: str):
         """
@@ -198,6 +204,83 @@ class CodeChunker:
             current_chunk = []
             token_count = 0
             
+            # Identify the class or function name for this chunk if possible
+            class_name = None
+            function_name = None
+            
+            # Check if this breakpoint is a class or function definition
+            if self.file_extension == "py" and i < len(lines):
+                line = lines[i].strip()
+                if line.startswith("class "):
+                    class_name = line.split("class ")[1].split("(")[0].split(":")[0].strip()
+                elif line.startswith("def "):
+                    function_name = line.split("def ")[1].split("(")[0].strip()
+                    # Check if this is a method inside a class by looking at indentation pattern
+                    for j in range(i-1, -1, -1):
+                        prev_line = lines[j].strip()
+                        if prev_line.startswith("class ") and len(lines[j]) - len(lines[j].lstrip()) < len(lines[i]) - len(lines[i].lstrip()):
+                            class_name = prev_line.split("class ")[1].split("(")[0].split(":")[0].strip()
+                            break
+            elif self.file_extension == "java" and i < len(lines):
+                # Java class and method detection
+                line = lines[i].strip()
+                # Check for class declaration
+                if "class " in line and "{" in line:
+                    parts = line.split("class ")[1].split("{")[0].strip()
+                    class_name = parts.split(" ")[0].strip() # Handle inheritance, interfaces, etc.
+                # Check for method declaration (simplistic)
+                elif ("public " in line or "private " in line or "protected " in line) and "(" in line and ")" in line:
+                    parts = line.split("(")[0].strip().split(" ")
+                    # Last word before the parameters is the method name
+                    function_name = parts[-1].strip()
+                    # Find parent class
+                    for j in range(i-1, -1, -1):
+                        prev_line = lines[j].strip()
+                        if "class " in prev_line:
+                            parts = prev_line.split("class ")[1].split("{")[0].strip()
+                            class_name = parts.split(" ")[0].strip()
+                            break
+            elif self.file_extension == "js" and i < len(lines):
+                # JavaScript class and function detection
+                line = lines[i].strip()
+                # Check for class declaration
+                if line.startswith("class "):
+                    class_name = line.split("class ")[1].split("{")[0].split(" ")[0].strip()
+                # Check for function declaration
+                elif line.startswith("function "):
+                    function_name = line.split("function ")[1].split("(")[0].strip()
+                # Check for method in class
+                elif "=" in line and "function" in line:
+                    function_name = line.split("=")[0].strip()
+                # Arrow functions
+                elif "=>" in line:
+                    parts = line.split("=")[0].strip()
+                    if parts:
+                        function_name = parts.split(" ")[-1].strip()
+                # Find parent class for methods
+                if function_name and not class_name:
+                    for j in range(i-1, -1, -1):
+                        prev_line = lines[j].strip()
+                        if prev_line.startswith("class "):
+                            class_name = prev_line.split("class ")[1].split("{")[0].split(" ")[0].strip()
+                            break
+            elif self.file_extension == "cpp" and i < len(lines):
+                # C++ class and function detection
+                line = lines[i].strip()
+                # Check for class declaration
+                if "class " in line and ("{" in line or ";" in line):
+                    class_name = line.split("class ")[1].split("{")[0].split(":")[0].strip()
+                # Check for function definition
+                elif "(" in line and ")" in line and "{" in line:
+                    parts = line.split("(")[0].strip().split(" ")
+                    # Last word before parameters is the function name
+                    function_name = parts[-1].strip()
+                    # Check if this is a class method by looking for ClassName::
+                    if "::" in function_name:
+                        parts = function_name.split("::")
+                        class_name = parts[0].strip()
+                        function_name = parts[1].strip()
+            
             # Special case for import statements in Python
             if self.file_extension == "py" and "import" in lines[i]:
                 # Group import statements together
@@ -247,13 +330,16 @@ class CodeChunker:
             
             # Add the chunk to the list
             chunk_text = '\n'.join(current_chunk)
-            chunked_code.append({
-                "chunk": chunk_text,
-                "start_line": start_line,
-                "end_line": start_line + len(current_chunk) - 1,
-                "token_count": count_tokens(chunk_text, self.encoding_name)
-            })
-            
+            chunk_info = {
+                'chunk': chunk_text,
+                'start_line': start_line + 1,  # Convert to 1-indexed
+                'end_line': start_line + len(current_chunk),
+                'token_count': token_count,
+                'class_name': class_name,
+                'function_name': function_name
+            }
+            chunked_code.append(chunk_info)
+        
         return chunked_code
     
     def get_chunk(self, chunked_codebase: List[Dict[str, Any]], chunk_number: int) -> Optional[Dict[str, Any]]:

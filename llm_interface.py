@@ -102,6 +102,13 @@ class LLMInterface:
             The model's response.
         """
         try:
+            # Check if API key is valid
+            if not self.api_key or self.api_key.startswith("sk-or-v1-") and len(self.api_key) > 40:
+                return (
+                    "Error: Invalid OpenAI API key. Please update your .env file with a valid API key.\n"
+                    "You can get an API key from https://platform.openai.com/account/api-keys"
+                )
+            
             response = self.client.chat.completions.create(
                 model=self.model_name,
                 messages=[
@@ -115,6 +122,11 @@ class LLMInterface:
             return response.choices[0].message.content.strip()
         except Exception as e:
             print(f"Error querying OpenAI: {e}")
+            if "invalid_api_key" in str(e) or "Incorrect API key" in str(e):
+                return (
+                    "Error: Invalid OpenAI API key. Please update your .env file with a valid API key.\n"
+                    "You can get an API key from https://platform.openai.com/account/api-keys"
+                )
             return f"Error: Unable to get a response from the language model. Please try again later. ({str(e)})"
     
     def generate_summary(self, repo_url: str, context: List[Document]) -> str:
