@@ -11,9 +11,13 @@ PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 # Pinecone settings
 PINECONE_INDEX_NAME = "gitsummarizer-index"
 PINECONE_NAMESPACE = "default-namespace"
+PINECONE_TOP_K = 7  # Default number of results to return from similarity search
 
 # GitHub settings
 GITHUB_TEMP_DIR = "temp_repos"
+
+# Summary settings
+GENERATE_SUMMARY = False  # Control whether to generate repository summaries
 
 # Embedding settings
 DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
@@ -48,5 +52,6 @@ SUPPORTED_LANGUAGES = {
     ".tsx": "js",
     ".go": "go",
     ".html": "html",
-    ".htm": "html"
+    ".htm": "html",
+    ".md": "markdown"
 } 

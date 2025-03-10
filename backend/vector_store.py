@@ -6,7 +6,7 @@ from pinecone import Pinecone
 from langchain.schema import Document
 from langchain_pinecone import PineconeVectorStore
 from langchain_community.embeddings import OpenAIEmbeddings
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 
 import config
 
@@ -175,18 +175,22 @@ class VectorStore:
             
         return self.add_documents(documents, namespace=repo_url)
     
-    def similarity_search(self, query: str, namespace: Optional[str] = None, k: int = 5) -> List[Document]:
+    def similarity_search(self, query: str, namespace: Optional[str] = None, k: int = None) -> List[Document]:
         """
         Perform a similarity search with a query.
         
         Args:
             query: The query to search for.
             namespace: Optional namespace to search in.
-            k: Number of results to return.
+            k: Number of results to return. If None, uses the value from config.
             
         Returns:
             List of Document objects with the search results.
         """
+        # Use the value from config if k is not provided
+        if k is None:
+            k = config.PINECONE_TOP_K
+            
         if namespace:
             return self.vector_store.similarity_search(query, k=k, namespace=namespace)
         else:
