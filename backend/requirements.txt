@@ -15,3 +15,6 @@ tree-sitter-cpp
 tree-sitter-javascript
 tree-sitter-go
 tree-sitter-html
+fastapi
+uvicorn
+pydantic
