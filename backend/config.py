@@ -17,7 +17,7 @@ PINECONE_TOP_K = 7  # Default number of results to return from similarity search
 GITHUB_TEMP_DIR = "temp_repos"
 
 # Summary settings
-GENERATE_SUMMARY = False  # Control whether to generate repository summaries
+GENERATE_SUMMARY = True  # Control whether to generate repository summaries
 
 # Embedding settings
 DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"

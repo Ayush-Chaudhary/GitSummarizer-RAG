@@ -3,7 +3,7 @@ langchain
 langchain-community
 langchain-pinecone
 langchain-huggingface
-pinecone-client
+pinecone>=3.0.0
 tiktoken
 openai
 python-dotenv

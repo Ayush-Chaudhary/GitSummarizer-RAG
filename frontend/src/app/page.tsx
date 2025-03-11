@@ -6,8 +6,47 @@ import {
   loadRepository, 
   getRepositoryStatus, 
   queryRepository, 
-  getRepositorySummary 
+  getRepositorySummary,
+  RepositoryStatus 
 } from "@/lib/api-service";
+
+interface RepoStatusState {
+  loaded: boolean;
+  ready: boolean;
+  details?: {
+    stage: string;
+    message: string;
+    progress?: {
+      total_files: number;
+      processed_files: number;
+      skipped_files: number;
+      chunks_created: number;
+    };
+    error?: string;
+  };
+}
+
+function formatStage(stage: string): string {
+  const stageMap: { [key: string]: string } = {
+    'initializing': 'Initializing',
+    'cloning': 'Cloning Repository',
+    'scanning': 'Scanning Files',
+    'processing': 'Processing Files',
+    'storing': 'Storing Data',
+    'ready': 'Ready',
+    'error': 'Error',
+    'queued': 'Queued'
+  };
+  return stageMap[stage] || stage;
+}
+
+function getStatusText(status: any): string {
+  if (!status.loaded) return "Not Loaded";
+  if (status.details?.error) return "Error";
+  if (status.ready) return "Ready";
+  if (status.details?.stage) return formatStage(status.details.stage);
+  return "Processing...";
+}
 
 export default function Home() {
   const router = useRouter();
@@ -15,7 +54,7 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [repoStatus, setRepoStatus] = useState({ loaded: false, ready: false });
+  const [repoStatus, setRepoStatus] = useState<RepoStatusState>({ loaded: false, ready: false });
   const [activeRepo, setActiveRepo] = useState("");
   const [answer, setAnswer] = useState("");
   const [summary, setSummary] = useState("");
@@ -23,35 +62,75 @@ export default function Home() {
 
   // Check repository status periodically if one is loading
   useEffect(() => {
-    if (activeRepo && !repoStatus.ready) {
-      const checkStatus = async () => {
-        const status = await getRepositoryStatus(activeRepo);
-        setRepoStatus(status);
-      };
-      
-      // Check immediately
-      checkStatus();
-      
-      // Then check every 5 seconds
-      const interval = setInterval(checkStatus, 5000);
-      
-      return () => clearInterval(interval);
-    }
-  }, [activeRepo, repoStatus.ready]);
+    if (!activeRepo) return;
 
-  const handleSubmitRepo = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!repoUrl) return;
+    const checkStatus = async () => {
+      try {
+        const status = await getRepositoryStatus(activeRepo);
+        
+        // Update the status state
+        setRepoStatus({
+          loaded: status.loaded,
+          ready: status.status === "ready" || status.status === "error",
+          details: {
+            stage: status.status,
+            message: status.details.message,
+            progress: status.details.progress,
+            error: status.details.error
+          }
+        });
+        
+        // If there's an error or the status is ready, stop polling
+        if (status.status === "error" || status.status === "ready") {
+          if (status.status === "error") {
+            setError(status.details.message || "An error occurred while processing the repository");
+          }
+          return;
+        }
+        
+        // Log processing status
+        if (status.details?.stage && status.details?.message) {
+          console.log(`Processing: ${status.details.stage} - ${status.details.message}`);
+        }
+      } catch (err) {
+        console.error("Error checking repository status:", err);
+        setError("Failed to check repository status");
+        setRepoStatus(prev => ({ ...prev, ready: true })); // Stop polling on error
+      }
+    };
+    
+    // Check immediately
+    checkStatus();
+    
+    // Then check every 5 seconds if not ready
+    const interval = setInterval(() => {
+      if (!repoStatus.ready) {
+        checkStatus();
+      }
+    }, 5000);
+    
+    // Cleanup interval on unmount or when activeRepo changes
+    return () => clearInterval(interval);
+  }, [activeRepo]);
+
+  const handleSubmitRepo = async (e: React.FormEvent | null, forceReload: boolean = false) => {
+    if (e) e.preventDefault();
+    if (!repoUrl && !activeRepo) return;
     
     setLoading(true);
     setError("");
     
     try {
-      const response = await loadRepository(repoUrl);
+      // Use repoUrl for new submissions, only fallback to activeRepo if repoUrl is empty
+      const urlToUse = repoUrl || activeRepo;
+      const response = await loadRepository(urlToUse, forceReload);
       
       if (response.success) {
-        setActiveRepo(repoUrl);
+        setActiveRepo(urlToUse);
         setRepoStatus({ loaded: true, ready: false });
+        // Clear the answer and summary when changing repositories
+        setAnswer("");
+        setSummary("");
       } else {
         setError(response.message || "Failed to load repository");
       }
@@ -116,22 +195,41 @@ export default function Home() {
 
       {/* Repository URL Input */}
       <section className="mb-10">
-        <form onSubmit={handleSubmitRepo} className="flex flex-col md:flex-row gap-4">
+        <form onSubmit={(e) => handleSubmitRepo(e, false)} className="flex flex-col md:flex-row gap-4">
           <input
             type="text"
             value={repoUrl}
             onChange={(e) => setRepoUrl(e.target.value)}
             placeholder="Enter GitHub repository URL (e.g., https://github.com/username/repo)"
             className="flex-grow p-3 border rounded-lg"
-            disabled={loading || repoStatus.ready}
+            disabled={loading}
           />
-          <button
-            type="submit"
-            className="bg-blue-600 text-white p-3 rounded-lg hover:bg-blue-700 transition-colors disabled:bg-gray-400"
-            disabled={loading || !repoUrl || repoStatus.ready}
-          >
-            {loading && !repoStatus.ready ? "Loading..." : "Load Repository"}
-          </button>
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              className="bg-blue-600 text-white p-3 rounded-lg hover:bg-blue-700 transition-colors disabled:bg-gray-400"
+              disabled={loading || !repoUrl}
+            >
+              {loading ? "Loading..." : activeRepo ? "Change Repository" : "Load Repository"}
+            </button>
+            {activeRepo && (
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveRepo("");
+                  setRepoUrl("");
+                  setRepoStatus({ loaded: false, ready: false });
+                  setAnswer("");
+                  setSummary("");
+                  setError("");
+                }}
+                className="bg-gray-200 text-gray-700 p-3 rounded-lg hover:bg-gray-300 transition-colors"
+                disabled={loading}
+              >
+                Clear
+              </button>
+            )}
+          </div>
         </form>
       </section>
 
@@ -139,32 +237,67 @@ export default function Home() {
       {activeRepo && (
         <section className="mb-8 p-4 border rounded-lg bg-gray-50">
           <div className="flex items-center justify-between">
-            <div>
+            <div className="flex-grow">
               <h2 className="text-lg font-semibold">Repository: {activeRepo}</h2>
-              <p className="text-sm text-gray-600">
-                Status: {repoStatus.ready ? "Ready" : repoStatus.loaded ? "Loading..." : "Not loaded"}
+              <p className="text-sm text-gray-600 mb-2">
+                Status: {getStatusText(repoStatus)}
               </p>
+              {repoStatus.loaded && !repoStatus.ready && (
+                <div className="mt-2">
+                  <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
+                    <div 
+                      className="h-full bg-blue-600 transition-all duration-500"
+                      style={{ 
+                        width: repoStatus.details?.progress?.processed_files && repoStatus.details?.progress?.total_files
+                          ? `${(repoStatus.details.progress.processed_files / repoStatus.details.progress.total_files) * 100}%`
+                          : '0%'
+                      }}
+                    />
+                  </div>
+                  <p className="text-sm text-gray-600 mt-1">
+                    {repoStatus.details?.stage && `${formatStage(repoStatus.details.stage)}: `}
+                    {repoStatus.details?.message}
+                  </p>
+                  {repoStatus.details?.progress && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      Processed {repoStatus.details.progress.processed_files} of {repoStatus.details.progress.total_files} files
+                      {repoStatus.details.progress.chunks_created > 0 && 
+                        ` • ${repoStatus.details.progress.chunks_created} chunks created`}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
-            {repoStatus.ready && (
-              <div className="flex gap-2">
+            <div className="flex gap-2">
+              {repoStatus.ready ? (
+                <>
+                  <button
+                    onClick={() => setTab("query")}
+                    className={`px-4 py-2 rounded-md ${
+                      tab === "query" ? "bg-blue-600 text-white" : "bg-gray-200"
+                    }`}
+                  >
+                    Query
+                  </button>
+                  <button
+                    onClick={() => setTab("summary")}
+                    className={`px-4 py-2 rounded-md ${
+                      tab === "summary" ? "bg-blue-600 text-white" : "bg-gray-200"
+                    }`}
+                  >
+                    Summary
+                  </button>
+                </>
+              ) : (
                 <button
-                  onClick={() => setTab("query")}
-                  className={`px-4 py-2 rounded-md ${
-                    tab === "query" ? "bg-blue-600 text-white" : "bg-gray-200"
-                  }`}
+                  onClick={() => handleSubmitRepo(null, true)}
+                  className="px-4 py-2 rounded-md bg-gray-200 hover:bg-gray-300"
+                  disabled={loading}
                 >
-                  Query
+                  Retry
                 </button>
-                <button
-                  onClick={() => setTab("summary")}
-                  className={`px-4 py-2 rounded-md ${
-                    tab === "summary" ? "bg-blue-600 text-white" : "bg-gray-200"
-                  }`}
-                >
-                  Summary
-                </button>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </section>
       )}
@@ -181,33 +314,40 @@ export default function Home() {
         <section className="mb-6">
           {tab === "query" ? (
             <div>
-              <form onSubmit={handleSubmitQuery} className="mb-4">
-                <div className="flex flex-col gap-4">
+              <form onSubmit={handleSubmitQuery} className="space-y-4">
+                <div>
+                  <label htmlFor="query" className="block text-sm font-medium text-gray-700 mb-2">
+                    Ask a question about your repository
+                  </label>
                   <textarea
+                    id="query"
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
-                    placeholder="Ask a question about the repository..."
-                    className="w-full p-3 border rounded-lg h-32"
-                    disabled={loading}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleSubmitQuery(e as any);
+                      }
+                    }}
+                    className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="Enter your question here..."
+                    rows={3}
                   />
+                </div>
+                <div className="flex justify-end">
                   <button
                     type="submit"
-                    className="bg-blue-600 text-white p-3 rounded-lg hover:bg-blue-700 transition-colors disabled:bg-gray-400"
-                    disabled={loading || !query}
+                    disabled={!query.trim() || loading}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {loading ? "Thinking..." : "Ask Question"}
+                    {loading ? 'Querying...' : 'Submit Query'}
                   </button>
                 </div>
               </form>
-
               {answer && (
-                <div className="p-4 bg-gray-50 border rounded-lg">
-                  <h3 className="font-semibold text-lg mb-2">Answer:</h3>
-                  <div className="prose max-w-none">
-                    {answer.split("\n").map((line, i) => (
-                      <p key={i}>{line}</p>
-                    ))}
-                  </div>
+                <div className="mt-6 p-4 border rounded-lg bg-gray-50">
+                  <h3 className="font-semibold mb-2">Answer:</h3>
+                  <p className="whitespace-pre-wrap">{answer}</p>
                 </div>
               )}
             </div>

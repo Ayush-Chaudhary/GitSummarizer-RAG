@@ -26,7 +26,8 @@ class GitSummarizer:
         pinecone_api_key: Optional[str] = None,
         openai_api_key: Optional[str] = None,
         embedding_model: Optional[str] = None,
-        llm_model: Optional[str] = None
+        llm_model: Optional[str] = None,
+        status_callback: Optional[callable] = None
     ):
         """
         Initialize the GitSummarizer.
@@ -36,6 +37,7 @@ class GitSummarizer:
             openai_api_key: API key for OpenAI. If None, uses config or env vars.
             embedding_model: Name of the embedding model to use. If None, uses default from config.
             llm_model: Name of the language model to use. If None, uses default from config.
+            status_callback: Callback function to update processing status.
         """
         # Set API keys from arguments or environment variables
         if pinecone_api_key:
@@ -56,6 +58,12 @@ class GitSummarizer:
         self.current_repo_url = None
         self.current_repo_path = None
         self.loaded_repository = False
+        self.status_callback = status_callback
+    
+    def update_status(self, stage: str, message: str, progress: dict = None):
+        """Update processing status through callback if available."""
+        if self.status_callback:
+            self.status_callback(self.current_repo_url, stage, message, progress)
     
     def load_repository(self, repo_url: str) -> bool:
         """
@@ -67,36 +75,57 @@ class GitSummarizer:
         Returns:
             True if successful, False otherwise.
         """
+        self.current_repo_url = repo_url
         print(f"Loading repository: {repo_url}")
+        self.update_status("initializing", "Starting repository processing")
         
         # Clone repository
         try:
+            self.update_status("cloning", "Cloning repository")
             repo_path = self.github_retriever.clone_repository(repo_url)
         except Exception as e:
-            print(f"Error cloning repository: {e}")
+            error_msg = f"Error cloning repository: {e}"
+            print(error_msg)
+            self.update_status("error", error_msg)
             return False
             
         # Get files
         try:
+            self.update_status("scanning", "Scanning repository files")
             file_paths = self.github_retriever.get_file_paths(repo_path)
             print(f"Found {len(file_paths)} files in repository")
         except Exception as e:
-            print(f"Error getting file paths: {e}")
+            error_msg = f"Error getting file paths: {e}"
+            print(error_msg)
+            self.update_status("error", error_msg)
             return False
         
         # Process and chunk code files
         all_chunks = []
         processed_files = 0
         skipped_files = 0
+        total_files = len(file_paths)
+        
+        self.update_status("processing", "Processing repository files", {
+            "total_files": total_files,
+            "processed_files": 0,
+            "skipped_files": 0,
+            "chunks_created": 0
+        })
         
         # Track large files and problematic ones
         large_files = []
         problematic_files = []
         
         for file_idx, file_path in enumerate(file_paths):
-            # Print progress every 10 files or for the first and last file
-            if file_idx % 10 == 0 or file_idx == 0 or file_idx == len(file_paths) - 1:
-                print(f"Processing file {file_idx+1}/{len(file_paths)}: {file_path}")
+            # Update progress
+            if file_idx % 5 == 0 or file_idx == total_files - 1:
+                self.update_status("processing", f"Processing file {file_idx+1}/{total_files}", {
+                    "total_files": total_files,
+                    "processed_files": processed_files,
+                    "skipped_files": skipped_files,
+                    "chunks_created": len(all_chunks)
+                })
             
             # Skip binary and unsupported files
             if utils.is_binary_file(file_path) or not utils.is_supported_file(file_path):
@@ -186,26 +215,13 @@ class GitSummarizer:
                 problematic_files.append((file_path, str(e)))
                 skipped_files += 1
         
-        # Report processing summary
-        print(f"Repository processing summary:")
-        print(f"- Total files: {len(file_paths)}")
-        print(f"- Processed files: {processed_files}")
-        print(f"- Skipped files: {skipped_files}")
-        print(f"- Total chunks created: {len(all_chunks)}")
-        
-        if large_files:
-            print(f"- Large files skipped: {len(large_files)}")
-            for file_path, size in large_files[:5]:  # Show first 5
-                print(f"  - {file_path} ({size/1000000:.2f}MB)")
-            if len(large_files) > 5:
-                print(f"  - ...and {len(large_files) - 5} more")
-            
-        if problematic_files:
-            print(f"- Problematic files: {len(problematic_files)}")
-            for file_path, error in problematic_files[:5]:  # Show first 5
-                print(f"  - {file_path}: {error}")
-            if len(problematic_files) > 5:
-                print(f"  - ...and {len(problematic_files) - 5} more")
+        # Update final status
+        self.update_status("storing", "Storing chunks in vector database", {
+            "total_files": total_files,
+            "processed_files": processed_files,
+            "skipped_files": skipped_files,
+            "chunks_created": len(all_chunks)
+        })
         
         # Store chunks in vector store
         if all_chunks:
@@ -214,16 +230,26 @@ class GitSummarizer:
                 print(f"Added {len(all_chunks)} chunks to vector store for {repo_url}")
                 
                 # Update state
-                self.current_repo_url = repo_url
                 self.current_repo_path = repo_path
                 self.loaded_repository = True
                 
+                self.update_status("ready", "Repository loaded and ready", {
+                    "total_files": total_files,
+                    "processed_files": processed_files,
+                    "skipped_files": skipped_files,
+                    "chunks_created": len(all_chunks)
+                })
+                
                 return True
             except Exception as e:
-                print(f"Error adding chunks to vector store: {e}")
+                error_msg = f"Error adding chunks to vector store: {e}"
+                print(error_msg)
+                self.update_status("error", error_msg)
                 return False
         else:
-            print("No chunks were created. Repository may be empty or contain unsupported file types.")
+            error_msg = "No chunks were created. Repository may be empty or contain unsupported file types."
+            print(error_msg)
+            self.update_status("error", error_msg)
             return False
     
     def query(self, query_text: str, k: int = None) -> str:

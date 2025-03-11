@@ -24,6 +24,7 @@ var/
 venv/
 ENV/
 env/
+rag/
 
 # Jupyter Notebook
 .ipynb_checkpoints
