@@ -2,8 +2,9 @@
  * API Service for communicating with the backend
  */
 const API = {
-    // Backend API base URL
-    baseUrl: 'http://localhost:8000/api',
+    // Backend API base URL - configurable for different environments
+    // In browser, we can't access process.env directly, so we'll use window._env_ if available
+    baseUrl: (window._env_ && window._env_.BACKEND_URL) || 'http://localhost:8000/api',
     
     /**
      * Load a GitHub repository for analysis

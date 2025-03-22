@@ -11,6 +11,9 @@ RUN npm install
 # Copy the rest of the application
 COPY . .
 
+# Copy the .env.production to .env
+RUN cp .env.production .env || echo "No production env file"
+
 # Expose the port the app runs on
 EXPOSE 3000
 
