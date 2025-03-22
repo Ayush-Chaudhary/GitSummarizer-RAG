@@ -6,6 +6,7 @@ from typing import Optional, List, Dict, Any
 import time
 from datetime import datetime
 import atexit
+import signal
 
 from fastapi import FastAPI, HTTPException, Body, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,8 +17,8 @@ from main import GitSummarizer
 
 # File to store repository status
 STATUS_FILE = "repository_status.json"
-# File to track server restarts due to code changes
-CODE_CHANGE_FLAG = ".code_changed"
+# Lock file to prevent auto-reloading during critical operations
+PROCESSING_LOCK_FILE = ".processing_lock"
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -39,38 +40,37 @@ app.add_middleware(
 active_repos = {}
 # Store detailed status of repositories with timestamps
 repository_status = {}
+# Flag to track if we're currently processing a repository
+is_processing = False
 
-def is_code_change_restart():
-    """Check if the server restart was due to code changes."""
-    return os.path.exists(CODE_CHANGE_FLAG)
-
-def mark_code_change():
-    """Mark that a code change has occurred."""
+def create_lock_file():
+    """Create a lock file to prevent auto-reloading during processing."""
     try:
-        with open(CODE_CHANGE_FLAG, 'w') as f:
-            f.write(str(time.time()))
+        with open(PROCESSING_LOCK_FILE, 'w') as f:
+            f.write(str(datetime.now().isoformat()))
+        print(f"Created processing lock file: {PROCESSING_LOCK_FILE}")
     except Exception as e:
-        print(f"Error marking code change: {e}")
+        print(f"Error creating lock file: {e}")
 
-def clear_code_change_flag():
-    """Clear the code change flag."""
+def remove_lock_file():
+    """Remove the lock file when processing is complete."""
     try:
-        if os.path.exists(CODE_CHANGE_FLAG):
-            os.remove(CODE_CHANGE_FLAG)
+        if os.path.exists(PROCESSING_LOCK_FILE):
+            os.remove(PROCESSING_LOCK_FILE)
+            print(f"Removed processing lock file: {PROCESSING_LOCK_FILE}")
     except Exception as e:
-        print(f"Error clearing code change flag: {e}")
+        print(f"Error removing lock file: {e}")
+
+def is_processing_locked():
+    """Check if processing is currently locked."""
+    return os.path.exists(PROCESSING_LOCK_FILE)
 
 def load_status_from_disk():
-    """Load repository status from disk if it exists and is valid."""
+    """Load repository status from disk if it exists."""
     try:
         if os.path.exists(STATUS_FILE):
             with open(STATUS_FILE, 'r') as f:
                 saved_status = json.load(f)
-                
-                # If this is a restart due to code changes, don't load old status
-                if is_code_change_restart():
-                    print("Code change detected - clearing saved status")
-                    return {}
                 
                 # Filter out stale entries
                 current_time = datetime.now()
@@ -78,8 +78,8 @@ def load_status_from_disk():
                 for repo_url, status in saved_status.items():
                     try:
                         last_updated = datetime.fromisoformat(status["last_updated"])
-                        # Only keep entries less than 5 minutes old
-                        if (current_time - last_updated).total_seconds() < 300:
+                        # Only keep entries less than 15 minutes old
+                        if (current_time - last_updated).total_seconds() < 900:  # 15 minutes
                             valid_status[repo_url] = status
                     except (KeyError, ValueError):
                         continue
@@ -91,10 +91,9 @@ def load_status_from_disk():
 def save_status_to_disk():
     """Save repository status to disk."""
     try:
-        # Don't save if this is a code change restart
-        if not is_code_change_restart():
-            with open(STATUS_FILE, 'w') as f:
-                json.dump(repository_status, f)
+        with open(STATUS_FILE, 'w') as f:
+            json.dump(repository_status, f)
+        print(f"Successfully saved repository status to {STATUS_FILE}")
     except Exception as e:
         print(f"Error saving status to disk: {e}")
 
@@ -106,6 +105,16 @@ atexit.register(save_status_to_disk)
 
 def update_repository_status(repo_url: str, stage: str, message: str, progress: dict = None):
     """Update the status of a repository with timestamp."""
+    global is_processing
+    
+    # Mark as processing if in an active stage
+    if stage not in ["ready", "error"]:
+        is_processing = True
+        create_lock_file()
+    else:
+        is_processing = False
+        remove_lock_file()
+    
     current_time = datetime.now().isoformat()
     repository_status[repo_url] = {
         "stage": stage,
@@ -115,9 +124,20 @@ def update_repository_status(repo_url: str, stage: str, message: str, progress: 
     }
     print(f"Status update [{current_time}] - {repo_url}: {stage} - {message}")
     
-    # Only save to disk for completed states
+    # Save to disk on completed or error states
     if stage in ["ready", "error"]:
         save_status_to_disk()
+
+# Handle graceful shutdown
+def graceful_shutdown(signum, frame):
+    """Handle process termination with graceful shutdown."""
+    print("Received termination signal. Performing graceful shutdown...")
+    save_status_to_disk()
+    sys.exit(0)
+
+# Register signal handlers
+signal.signal(signal.SIGTERM, graceful_shutdown)
+signal.signal(signal.SIGINT, graceful_shutdown)
 
 # Pydantic models for request/response
 class RepoRequest(BaseModel):
@@ -145,7 +165,13 @@ class StatusResponse(BaseModel):
     
 # Background task to load repository
 def load_repository_task(repo_url: str):
+    global is_processing
+    
     try:
+        # Create processing lock file
+        is_processing = True
+        create_lock_file()
+        
         # Initialize GitSummarizer with status callback
         summarizer = GitSummarizer(status_callback=update_repository_status)
         
@@ -175,6 +201,10 @@ def load_repository_task(repo_url: str):
         error_msg = f"Error loading repository {repo_url}: {str(e)}"
         print(error_msg)
         update_repository_status(repo_url, "error", error_msg)
+    finally:
+        # Clear processing state
+        is_processing = False
+        remove_lock_file()
 
 @app.on_event("startup")
 async def startup_event():
@@ -183,25 +213,39 @@ async def startup_event():
     global repository_status
     repository_status = load_status_from_disk()
     
-    if is_code_change_restart():
-        print("Server restarted due to code changes - clearing status")
-        repository_status = {}
-        clear_code_change_flag()
-    else:
-        # Only mark interrupted status for non-code-change restarts
-        for repo_url, status in repository_status.items():
-            if status["stage"] not in ["ready", "error"]:
-                update_repository_status(
-                    repo_url,
-                    "error",
-                    "Processing interrupted by server restart - please try again"
-                )
+    # Remove any lock file from previous runs
+    remove_lock_file()
+    
+    # Restore repositories that were marked as ready
+    for repo_url, status in repository_status.items():
+        if status["stage"] == "ready":
+            try:
+                print(f"Restoring repository: {repo_url}")
+                summarizer = GitSummarizer(status_callback=update_repository_status)
+                if summarizer.load_repository(repo_url, skip_processing=True):
+                    active_repos[repo_url] = summarizer
+                    print(f"Successfully restored: {repo_url}")
+                else:
+                    print(f"Failed to restore: {repo_url}")
+                    status["stage"] = "error"
+                    status["message"] = "Repository could not be restored after server restart"
+            except Exception as e:
+                print(f"Error restoring repository {repo_url}: {str(e)}")
+                status["stage"] = "error"
+                status["message"] = f"Error restoring: {str(e)}"
+        elif status["stage"] not in ["ready", "error"]:
+            update_repository_status(
+                repo_url,
+                "error",
+                "Processing interrupted by server restart - please try again"
+            )
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Handle shutdown tasks."""
     print("Saving repository status...")
     save_status_to_disk()
+    remove_lock_file()
 
 # API Routes
 @app.post("/api/repository", response_model=RepoResponse)
@@ -210,8 +254,14 @@ async def load_repository(background_tasks: BackgroundTasks, repo_request: RepoR
     Load a GitHub repository for analysis.
     This is an asynchronous operation that will run in the background.
     """
+    global is_processing
+    
+    # Check if already processing something
+    if is_processing:
+        return {"success": False, "message": "Another repository is currently being processed. Please try again later."}
+    
     repo_url = repo_request.repo_url
-    force_reload = repo_request.force_reload if hasattr(repo_request, 'force_reload') else False
+    force_reload = repo_request.force_reload
     
     # Check if already loaded or processing
     if repo_url in repository_status and not force_reload:
@@ -219,7 +269,7 @@ async def load_repository(background_tasks: BackgroundTasks, repo_request: RepoR
         # If the repository is already being processed and the last update was recent
         if status["stage"] not in ["ready", "error"]:
             last_updated = datetime.fromisoformat(status["last_updated"])
-            if (datetime.now() - last_updated).total_seconds() < 300:  # 5 minutes timeout
+            if (datetime.now() - last_updated).total_seconds() < 900:  # 15 minutes timeout
                 return {"success": True, "message": "Repository is already being processed"}
     
     # If we're here, either:
@@ -255,10 +305,10 @@ async def get_repository_status(repo_url: str):
         "last_updated": datetime.now().isoformat()
     })
     
-    # Check for stale status (no updates for 5 minutes)
+    # Check for stale status (no updates for 15 minutes)
     if status_info["stage"] not in ["ready", "error", "not_found"]:
         last_updated = datetime.fromisoformat(status_info["last_updated"])
-        if (datetime.now() - last_updated).total_seconds() > 300:
+        if (datetime.now() - last_updated).total_seconds() > 900:  # 15 minutes
             status_info = {
                 "stage": "error",
                 "message": "Processing timed out - please try again",
@@ -300,17 +350,20 @@ async def get_repository_summary(repo_url: str):
     
     return {"summary": summary}
 
-@app.delete("/api/repository/{repo_url}")
+@app.delete("/api/repository/{repo_url:path}")
 async def unload_repository(repo_url: str):
     """
     Unload a repository to free up resources.
     """
-    # URL decode the repo_url if needed
-    
     if repo_url in active_repos:
         summarizer = active_repos[repo_url]
         summarizer.cleanup()
         del active_repos[repo_url]
+        
+        if repo_url in repository_status:
+            del repository_status[repo_url]
+            save_status_to_disk()
+            
         return {"success": True, "message": "Repository unloaded"}
     else:
         return {"success": False, "message": "Repository not found"}
@@ -321,18 +374,27 @@ async def health_check():
     """
     Check if the API is running.
     """
-    return {"status": "healthy"}
+    return {
+        "status": "healthy", 
+        "processing": is_processing,
+        "lock_file_exists": is_processing_locked(),
+        "active_repositories": len(active_repos)
+    }
+
+# Flag endpoint to check if restart is allowed
+@app.get("/api/can_restart")
+async def can_restart():
+    """
+    Check if it's safe to restart the server.
+    Used by the frontend to determine if reload/navigation is allowed.
+    """
+    return {"can_restart": not is_processing}
 
 if __name__ == "__main__":
-    # Mark code change for development server auto-reload
-    if '--reload' in sys.argv:
-        mark_code_change()
-    
     # Run the API server
     uvicorn.run(
         "api:app",
         host="0.0.0.0",
         port=8000,
-        reload=True,
-        reload_delay=1  # Add small delay to ensure flag file is processed
+        reload=False  # Disable auto-reload to prevent interruptions
     ) 

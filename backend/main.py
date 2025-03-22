@@ -65,12 +65,14 @@ class GitSummarizer:
         if self.status_callback:
             self.status_callback(self.current_repo_url, stage, message, progress)
     
-    def load_repository(self, repo_url: str) -> bool:
+    def load_repository(self, repo_url: str, skip_processing: bool = False) -> bool:
         """
         Load a repository, chunk its contents, and store in vector database.
         
         Args:
             repo_url: URL of the GitHub repository.
+            skip_processing: If True, skip processing files and just restore state.
+                            Used when restoring repositories after server restart.
             
         Returns:
             True if successful, False otherwise.
@@ -78,6 +80,13 @@ class GitSummarizer:
         self.current_repo_url = repo_url
         print(f"Loading repository: {repo_url}")
         self.update_status("initializing", "Starting repository processing")
+        
+        # For repository restoration after restart, just set the state
+        if skip_processing:
+            print(f"Restoring repository state for {repo_url} (skipping processing)")
+            self.loaded_repository = True
+            self.update_status("ready", "Repository loaded and ready")
+            return True
         
         # Clone repository
         try:

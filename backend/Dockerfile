@@ -9,11 +9,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Create temp_repos directory
-RUN mkdir -p temp_repos
+# Create necessary directories
+RUN mkdir -p /app/data
 
-# Expose port
+# Expose the port the app runs on
 EXPOSE 8000
 
-# Run the API server
+# Command to run the application
 CMD ["python", "api.py"] 

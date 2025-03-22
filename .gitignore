@@ -19,6 +19,51 @@ var/
 *.egg-info/
 .installed.cfg
 *.egg
+.env
+
+# JavaScript/Node.js
+node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+package-lock.json
+.npm
+.yarn-integrity
+
+# IDE/Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Operating System
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Project specific
+/backend/repositories/
+/backend/.processing_lock
+/backend/repository_status.json
+/backend/__pycache__/
+/backend/.temp/
+
+# Environment
+.venv/
+venv/
+ENV/
+
+# Logs
+logs/
+*.log
+
+# Build
+.next/
+out/
+build/
+dist/
 
 # Virtual Environment
 venv/
@@ -30,35 +75,15 @@ rag/
 .ipynb_checkpoints
 
 # Environment variables
-.env
 .env.local
 
-# IDE specific files
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# OS specific files
-.DS_Store
-Thumbs.db
-
 # Frontend specific
-node_modules/
-.next/
-out/
 .vercel
 .turbo
 .env*.local
 
 # Temp directories
 temp_repos/
-
-# Logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
 
 # Coverage reports
 coverage/
